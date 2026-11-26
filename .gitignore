@@ -3,3 +3,7 @@
 
 #Environment variables / API keys
 .env
+
+#temp files
+tempCodeRunnerFile.py
+*.pyc

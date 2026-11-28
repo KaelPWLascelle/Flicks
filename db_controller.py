@@ -1,9 +1,11 @@
 import sqlite3 #For the db
 import requests #Used to pull from website data and API's (TMDB, MovieLens)
 import os 
+import csv #For movie data import/export
 
 from pathlib import Path #For Writing to .env
 from dotenv import load_dotenv #needed to read the .env
+from datetime import datetime
 
 #Initalize the db based on the sql file
 def init_db():
@@ -42,6 +44,10 @@ def set_api_key(api_key: str):
 
     #Get the api key from the .env
 def get_api_key():
+    '''
+    Gets the TMDB api key
+    Required for any requests to TMDB
+    '''
     load_dotenv(ENV_PATH, override=True)
     api_key = os.getenv("TMDB_API_KEY")
     if not api_key:
@@ -162,8 +168,8 @@ def get_tmdb_entry_data(tmdb_id):
         "keywords": keywords
     }
 
-# ADD MOVIE TO DATABASE
-def add_movie_to_db(db_path, movie):
+#Add a movie to the db
+def add_movie_to_db(movie):
     """
     Put the movie data into the database.
     """
@@ -173,7 +179,7 @@ def add_movie_to_db(db_path, movie):
     if not Path("flicks.db").exists(): 
         init_db()
 
-    connection = sqlite3.connect(db_path) #Connect to the sql database
+    connection = sqlite3.connect("flicks.db") #Connect to the sql database
     connection.execute("PRAGMA foreign_keys = ON")
 
     try:
@@ -280,8 +286,7 @@ def add_movie_to_db(db_path, movie):
     finally:
         connection.close()
 
-#Setup a command to get 1 new movie at a time
-
+#Test Command to get 1 new movie at a time, Once the project is built up should just call the add_movie_to_db directly.
 def add_one_movie():
     """
     Test command to search for a new movie and then add it to the DB.
@@ -305,7 +310,176 @@ def add_one_movie():
 
     movie = get_tmdb_entry_data(tmdb_id)
 
-    return add_movie_to_db("flicks.db", movie)
+    return add_movie_to_db(movie)
+
+
+#Command to add a new user
+def add_user(username):
+    '''
+    Add a user to the database
+    
+    username: User name the new user will use.
+    The id for the user is automatically incrememnted in the database.
+    '''
+    if not Path("flicks.db").exists(): 
+        init_db()
+    
+    connection = sqlite3.connect("flicks.db")
+
+    cursor = connection.execute(
+        """
+        INSERT INTO Users (username, created)
+        VALUES (?, ?)
+        """,
+        (username, datetime.now().isoformat())
+
+    )
+
+    user_id = cursor.lastrowid
+
+    connection.commit()
+    connection.close()
+    print(f"User {username} added with ID {user_id}")
+    return user_id
+
+#Command to rate a movie and add the rating to the database
+def rate_movie(user_id, movie_id, rating):
+    '''
+    Lets the user rate a movie.
+    
+    user_id: The id of the user rating the movie
+    movie_id: The movie id from the database
+    rating: The rating of the movie (0.5 to 5, of 0.5 increments)
+    '''
+    #Check that the rating is between 0.5 and 5 of increments of half stars
+    if rating < 0.5 or rating > 5 or rating * 2 != int(rating * 2):
+        print("Rating must be between 0.5 and 5 in increments of 0.5.")
+        return
+
+    #Connect to the db
+    connection = sqlite3.connect("flicks.db")
+
+    #Get the user and check to make sure the id is valid
+    user = connection.execute(
+        "SELECT user_id FROM Users WHERE user_id = ?",
+        (user_id,)
+    ).fetchone()
+
+    if user is None:
+        print("User not found.")
+        connection.close()
+        return
+    
+    #Get the movie and check to make sure the id is valid
+    movie = connection.execute(
+        "SELECT movie_id FROM Movies WHERE movie_id = ?",
+        (movie_id,)
+    ).fetchone()
+
+    if movie is None:
+        print("Movie not found.")
+        connection.close()
+        return
+
+    #Write the data into the database
+    connection.execute(
+        """
+        INSERT INTO UserRatings (user_id, movie_id, watched, rating, timestamp)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, movie_id)
+        DO UPDATE SET rating = excluded.rating,
+                      watched = excluded.watched,
+                      timestamp = excluded.timestamp
+        """,
+        (user_id, movie_id, 1, rating, datetime.now().isoformat())
+    )
+
+    connection.commit()
+    connection.close()
+
+    print(f"Movie {movie_id} rated {rating}/5 by user {user_id}.")
+
+#Command to import LetterBoxd ratings.csv 
+def import_letterboxd_ratings(user_id, csv_path):
+    '''
+    Allows users to import there letterboxd ratings.
+
+    user_id: The id of the user importing the ratings
+    csv_path: The file path of the ratings. (Should always be a letterboxd ratings.csv)
+    '''
+    connection = sqlite3.connect("flicks.db")
+
+    #Check if the user exists
+    user = connection.execute(
+        "SELECT user_id FROM Users WHERE user_id = ?",
+        (user_id,)
+    ).fetchone()
+
+    connection.close()
+
+    if user is None:
+        print("User not found.")
+        return
+
+    #Keep track of how many get missed for whatever reason.
+    imported = 0
+    skipped = 0
+
+    with open(csv_path, "r", encoding="utf-8-sig", newline="") as file:
+        reader = csv.DictReader(file)
+
+        for row in reader:
+            title = row["Name"].strip()
+            year = int(row["Year"])
+            rating = float(row["Rating"])
+            watched_date = row["Date"]
+
+            #Validate rating
+            if rating < 0.5 or rating > 5 or rating * 2 != int(rating * 2):
+                print(f"Invalid rating for {title}.")
+                skipped += 1
+                continue
+
+            #Get TMDB ID
+            tmdb_id = get_movie_tmdb_id(title, year)
+
+            if tmdb_id is None:
+                print(f"Could not find {title}.")
+                skipped += 1
+                continue
+
+            #Get movie metadata and add to database, if it is already in it the functions skip it.
+            movie = get_tmdb_entry_data(tmdb_id)
+            movie_id = add_movie_to_db(movie)
+
+            if movie_id is None:
+                skipped += 1
+                continue
+
+            #Add or update user rating
+            connection = sqlite3.connect("flicks.db")
+
+            #Add it to the database
+            connection.execute(
+                """
+                INSERT INTO UserRatings (user_id, movie_id, watched, rating, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, movie_id)
+                DO UPDATE SET
+                    watched = excluded.watched,
+                    rating = excluded.rating,
+                    timestamp = excluded.timestamp
+                """,
+                (user_id, movie_id, 1, rating, watched_date)
+            )
+
+            connection.commit()
+            connection.close()
+
+            imported += 1
+            print(f"Imported: {title} ({year}) - {rating}/5")
+
+    print(f"\nImport complete: {imported} imported, {skipped} skipped.")
 
 #Make a test command that can request the system to get 1 new movie.
 #   What is the best system to get a new movie?
@@ -313,3 +487,61 @@ def add_one_movie():
 #       Should we get all the movies from the Movielens 32M first then do TMDB?
 #       Could probably add apart of the search bar that any movie searched for but not included gets pulled from TMDB
 
+#Testing
+
+
+def test_get_top_500_movies():
+
+    api_key = get_api_key()
+
+    imported = 0
+
+    # TMDB returns up to 20 movies per page
+    for page in range(1, 26):
+
+        response = requests.get(
+            f"{TMDB_URL}/movie/popular",
+            params={
+                "api_key": api_key,
+                "page": page,
+                "include_adult": False
+            }
+        )
+
+        response.raise_for_status()
+
+        movies = response.json().get("results", [])
+
+        if not movies:
+            break
+
+        for movie in movies:
+
+            try:
+                # Get full movie information from TMDB
+                movie_data = get_tmdb_entry_data(movie["id"])
+
+                # Add movie and its associated data to SQLite
+                add_movie_to_db(movie_data)
+
+                imported += 1
+
+                print(f"Imported {imported}/500: {movie_data['title']}")
+
+            except Exception as e:
+                print(f"Failed to import {movie.get('title')}: {e}")
+
+            if imported >= 500:
+                break
+
+        if imported >= 500:
+            break
+
+    print(f"\nFinished! Imported {imported} movies.")
+
+
+if __name__ == "__main__":
+    user = str(input("Enter username: "))
+    add_user(user)
+    test_get_top_500_movies()
+    import_letterboxd_ratings(1, 'ratings.csv')

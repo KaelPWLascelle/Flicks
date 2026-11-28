@@ -64,3 +64,14 @@ CREATE TABLE UserRatings (
     FOREIGN KEY (user_id) REFERENCES Users(user_id),
     FOREIGN KEY (movie_id) REFERENCES Movies(movie_id)
 );
+
+CREATE TABLE MovieFeatures (
+    movie_id INTEGER PRIMARY KEY,
+    feature_vector TEXT NOT NULL,
+    FOREIGN KEY (movie_id) REFERENCES Movies(movie_id)
+);
+
+CREATE TABLE FeatureDefinitions (
+    feature_id INTEGER PRIMARY KEY,
+    feature_name TEXT UNIQUE NOT NULL
+);

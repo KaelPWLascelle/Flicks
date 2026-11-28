@@ -3,6 +3,8 @@
 
 #Environment variables / API keys
 .env
+#Letterboxd ratings file
+ratings.csv 
 
 #temp files
 tempCodeRunnerFile.py
